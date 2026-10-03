@@ -1,0 +1,11 @@
+{
+  "name": "mongo-source-connector",
+  "config": {
+    "connector.class": "io.debezium.connector.mongodb.MongoDbConnector",
+    "mongodb.connection.string": "mongodb://mongo:27017/?replicaSet=rs0",
+    "topic.prefix": "dbz",
+    "database.include.list": "inventory",
+    "collection.include.list": "inventory.customers",
+    "tombstones.on.delete": "false"
+  }
+}

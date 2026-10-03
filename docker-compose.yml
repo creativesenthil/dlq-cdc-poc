@@ -1,0 +1,103 @@
+version: "3.8"
+
+services:
+  mongo:
+    image: mongo:7.0
+    container_name: dlq-mongo
+    command: ["--replSet", "rs0", "--bind_ip_all"]
+    ports:
+      - "27017:27017"
+    healthcheck:
+      test: echo "try { rs.status() } catch (err) { rs.initiate({_id:'rs0',members:[{_id:0,host:'mongo:27017'}]}) }" | mongosh --quiet
+      interval: 5s
+      timeout: 10s
+      retries: 10
+
+  redpanda:
+    image: redpandadata/redpanda:v24.2.7
+    container_name: dlq-redpanda
+    command:
+      - redpanda
+      - start
+      - --smp=1
+      - --memory=512M
+      - --overprovisioned
+      - --node-id=0
+      - --kafka-addr=PLAINTEXT://0.0.0.0:9092
+      - --advertise-kafka-addr=PLAINTEXT://redpanda:9092
+      - --pandaproxy-addr=0.0.0.0:8082
+      - --advertise-pandaproxy-addr=redpanda:8082
+    ports:
+      - "9092:9092"
+      - "8081:8081"
+      - "8082:8082"
+
+  localstack:
+    image: localstack/localstack:3.7
+    container_name: dlq-localstack
+    environment:
+      - SERVICES=s3,sqs
+      - DEFAULT_REGION=us-east-1
+      - AWS_ACCESS_KEY_ID=test
+      - AWS_SECRET_ACCESS_KEY=test
+    ports:
+      - "4566:4566"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4566/_localstack/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  debezium:
+    image: debezium/connect:2.7.3.Final
+    container_name: dlq-debezium
+    depends_on:
+      - redpanda
+      - mongo
+    environment:
+      - BOOTSTRAP_SERVERS=redpanda:9092
+      - GROUP_ID=1
+      - CONFIG_STORAGE_TOPIC=dbz_connect_configs
+      - OFFSET_STORAGE_TOPIC=dbz_connect_offsets
+      - STATUS_STORAGE_TOPIC=dbz_connect_status
+    ports:
+      - "8083:8083"
+
+  processor:
+    build: ./processor
+    container_name: dlq-processor
+    depends_on:
+      - redpanda
+      - localstack
+    environment:
+      - KAFKA_BOOTSTRAP=redpanda:9092
+      - KAFKA_TOPIC=dbz.inventory.customers
+      - AWS_ENDPOINT=http://localstack:4566
+      - AWS_ACCESS_KEY_ID=test
+      - AWS_SECRET_ACCESS_KEY=test
+      - AWS_REGION=us-east-1
+      - S3_BUCKET=cdc-landing
+      - SQS_MAIN_QUEUE=cdc-main
+      - SQS_DLQ=cdc-dlq
+    restart: unless-stopped
+
+  # Optional real Flink runtime, off by default (profile: flink)
+  flink-jobmanager:
+    image: flink:1.18-scala_2.12
+    container_name: dlq-flink-jm
+    command: jobmanager
+    environment:
+      - JOB_MANAGER_RPC_ADDRESS=flink-jobmanager
+    ports:
+      - "8084:8081"
+    profiles: ["flink"]
+
+  flink-taskmanager:
+    image: flink:1.18-scala_2.12
+    container_name: dlq-flink-tm
+    command: taskmanager
+    environment:
+      - JOB_MANAGER_RPC_ADDRESS=flink-jobmanager
+    depends_on:
+      - flink-jobmanager
+    profiles: ["flink"]
