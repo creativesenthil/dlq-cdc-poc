@@ -5,6 +5,9 @@ exactly in type, and has a plausible email. Anything else raises
 ValidationError, which the caller is expected to route to the DLQ.
 """
 
+import json
+
+
 REQUIRED_FIELDS = {
     "id": int,
     "first_name": str,
@@ -31,15 +34,21 @@ def validate_record(record: dict) -> dict:
 
     missing = [f for f in REQUIRED_FIELDS if f not in record or record[f] is None]
     if missing:
-        raise ValidationError(f"missing required field(s): {', '.join(missing)}")
+        raise ValidationError(
+            f"missing required field(s): {', '.join(missing)}"
+        )
 
     type_errors = []
+
     for field, expected_type in REQUIRED_FIELDS.items():
         value = record[field]
+
         if not isinstance(value, expected_type):
             type_errors.append(
-                f"{field} expected {expected_type.__name__}, got {type(value).__name__}"
+                f"{field} expected {expected_type.__name__}, "
+                f"got {type(value).__name__}"
             )
+
     if type_errors:
         raise ValidationError("; ".join(type_errors))
 
@@ -51,14 +60,33 @@ def validate_record(record: dict) -> dict:
 
 def extract_after(debezium_envelope: dict) -> dict:
     """
-    Debezium change events wrap the actual row under 'after' (insert/update)
-    or 'before' (delete). For this POC we only care about inserts/updates.
-    Falls back to treating the envelope itself as the record if it isn't
-    wrapped (useful for CI, where we produce plain JSON directly).
+    Extract the MongoDB document from the Debezium envelope.
+
+    Debezium MongoDB emits the 'after' field as a JSON string,
+    so deserialize it before validation.
     """
+
     if isinstance(debezium_envelope, dict) and "payload" in debezium_envelope:
         payload = debezium_envelope["payload"]
-        return payload.get("after") or {}
+        after = payload.get("after")
+
+        if not after:
+            return {}
+
+        if isinstance(after, str):
+            return json.loads(after)
+
+        return after
+
     if isinstance(debezium_envelope, dict) and "after" in debezium_envelope:
-        return debezium_envelope.get("after") or {}
+        after = debezium_envelope.get("after")
+
+        if not after:
+            return {}
+
+        if isinstance(after, str):
+            return json.loads(after)
+
+        return after
+
     return debezium_envelope
