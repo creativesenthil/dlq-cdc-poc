@@ -1,6 +1,4 @@
 #!/usr/bin/env bash
-# Inserts the sample valid record and the poison-pill record into MongoDB,
-# triggering the CDC change stream that Debezium will capture.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -9,14 +7,12 @@ POISON=$(cat "$SCRIPT_DIR/../data/poison_customer.json")
 
 echo "Inserting valid record ..."
 docker exec -i dlq-mongo mongosh --quiet --eval "
-  use inventory;
-  db.customers.insertOne($VALID);
+  db.getSiblingDB('inventory').customers.insertOne($VALID);
 "
 
 echo "Inserting poison-pill record ..."
 docker exec -i dlq-mongo mongosh --quiet --eval "
-  use inventory;
-  db.customers.insertOne($POISON);
+  db.getSiblingDB('inventory').customers.insertOne($POISON);
 "
 
 echo "Both documents inserted. Give CDC a few seconds to propagate."
