@@ -20,9 +20,18 @@ def try_repair(record: dict) -> dict:
     Currently handles exactly one benign defect: 'id' arriving as a
     numeric string (e.g. "2002") instead of an int.
     """
+    if not isinstance(record, dict):
+        raise ValidationError("record is not a JSON object")
+
     repaired = dict(record)
-    if "id" in repaired and isinstance(repaired["id"], str) and repaired["id"].isdigit():
+
+    if (
+        "id" in repaired
+        and isinstance(repaired["id"], str)
+        and repaired["id"].isdigit()
+    ):
         repaired["id"] = int(repaired["id"])
+
     return repaired
 
 
@@ -37,34 +46,56 @@ def run_remediation():
         MessageAttributeNames=["All"],
         WaitTimeSeconds=1,
     )
+
     messages = response.get("Messages", [])
+
     if not messages:
         print("DLQ is empty - nothing to remediate.")
         return
 
     for msg in messages:
-        body = json.loads(msg["Body"])
+        try:
+            body = json.loads(msg["Body"])
+        except json.JSONDecodeError as e:
+            print(f"DLQ message could not be parsed as JSON: {e}")
+            continue
+
         reason = (
             msg.get("MessageAttributes", {})
             .get("failure_reason", {})
             .get("StringValue", "unknown reason")
         )
+
         print(f"DLQ message: {body}  | failure_reason={reason}")
 
-        repaired = try_repair(body)
         try:
+            repaired = try_repair(body)
             validated = validate_record(repaired)
+
             key = f"customers/id={validated['id']}/replayed-{uuid.uuid4()}.json"
+
             s3.put_object(
                 Bucket=S3_BUCKET,
                 Key=key,
                 Body=json.dumps(validated).encode("utf-8"),
                 ContentType="application/json",
             )
-            sqs.delete_message(QueueUrl=queue_url, ReceiptHandle=msg["ReceiptHandle"])
-            print(f"  -> REPAIRED and replayed to s3://{S3_BUCKET}/{key}, removed from DLQ")
+
+            sqs.delete_message(
+                QueueUrl=queue_url,
+                ReceiptHandle=msg["ReceiptHandle"],
+            )
+
+            print(
+                f"  -> REPAIRED and replayed to "
+                f"s3://{S3_BUCKET}/{key}, removed from DLQ"
+            )
+
         except ValidationError as e:
-            print(f"  -> NOT auto-recoverable ({e}); left on DLQ for manual review")
+            print(
+                f"  -> NOT auto-recoverable ({e}); "
+                f"left on DLQ for manual review"
+            )
 
 
 if __name__ == "__main__":
